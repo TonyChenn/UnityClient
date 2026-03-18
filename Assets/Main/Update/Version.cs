@@ -1,5 +1,4 @@
 using System;
-using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -9,7 +8,8 @@ using UnityEngine.Networking;
 public static class Version
 {
     private const string VERSIONFILENAME = "version.data";
-    private const string REMOVEVERSIONNAME = "remote_version.data";
+    private const string REMOTEVERSIONNAME = "remote_version.data";
+    private const string REMOTEMANIFESTNAME = "remote_manifest.csv";
     private const string MANIFESTFILENAME = "manifest.csv";
 
     private const string ServerUrl = "https://mp-djlw.youzu.com";
@@ -64,6 +64,7 @@ public static class Version
         {
             Debug.Log($"[update] 无热更新：{localVersionInfo.ID}.{localVersionInfo.Tag}");
             enterGame();
+            return;
         }
         Debug.Log($"[update] 有更新：local:{localVersionInfo.Tag} remote:{remoteVersionInfo.Tag}");
 
@@ -74,12 +75,13 @@ public static class Version
         if (!success) { return; }
 
         // 对比清单文件
-
+        await DiffManifestAsync();
     }
 
     private static void enterGame()
     {
-
+        Debug.Log("[update] 进入游戏");
+        // TODO: 实现进入游戏的逻辑
     }
 
     /// <summary>
@@ -90,7 +92,18 @@ public static class Version
     {
         Debug.Log("[update] 开始解析本地版本号");
         string dst = Path.Combine(Application.persistentDataPath, VERSIONFILENAME);
-        if (!File.Exists(dst)) { await CopyToPersistentAsync(VERSIONFILENAME); }
+        if (!File.Exists(dst)) 
+        { 
+            try
+            {
+                await CopyToPersistentAsync(VERSIONFILENAME); 
+            }
+            catch (IOException ex)
+            {
+                Debug.LogError($"[update] 复制版本文件失败: {ex.Message}");
+                return;
+            }
+        }
 
         localVersionInfo = VersionFile.ReadVersionFile(dst);
     }
@@ -115,11 +128,9 @@ public static class Version
             return false;
         }
 
-
-        //await File.WriteAllBytesAsync(dst, request.downloadHandler.data);
         string response = request.downloadHandler.text;
         Debug.Log($"[S->C] {response}");
-        dynamic jobject = JsonUtility.FromJson<dynamic>(response);
+        VerResponse jobject = JsonUtility.FromJson<VerResponse>(response);
         if (jobject.status != 0)
         {
             return false;
@@ -133,6 +144,16 @@ public static class Version
 #endif
         return true;
     }
+    
+    // 从 /ver 接口获取的版本信息
+    [Serializable]
+    private class VerResponse
+    {
+        public int status;
+        public string ver;
+        public string ver_android_audit;
+        public string ver_ios_audit;
+    }
 
     /// <summary>
     /// 请求远程版本文件
@@ -141,7 +162,7 @@ public static class Version
     private static async Task<bool> RequestRemoteVersionFileAsync()
     {
         Debug.Log("[update] 获取远程版本文件");
-        string dst = Path.Combine(Application.persistentDataPath, REMOVEVERSIONNAME);
+        string dst = Path.Combine(Application.persistentDataPath, REMOTEVERSIONNAME);
 
         string url = $"{VersionURL}/{gameid}_{opgameId}_{opid}_{remoteVersion}.data?{DateTime.Now}";
         Debug.Log($"[C->S] {url}");
@@ -176,10 +197,14 @@ public static class Version
         localManifest = await ResManifest.ParseResManifestAsync(dst);
     }
 
+    /// <summary>
+    /// 请求远程资源清单 & 解析
+    /// </summary>
+    /// <returns></returns>
     private static async Task<bool> RequestRemoteResManifestAsync()
     {
         Debug.Log("[update] 获取远程资源清单");
-        string dst = Path.Combine(Application.persistentDataPath, REMOVEVERSIONNAME);
+        string dst = Path.Combine(Application.persistentDataPath, REMOTEMANIFESTNAME);
 
         string url = $"{remoteVersionInfo.UpdateUrl1}/version/white/res/{MANIFESTFILENAME}.{remoteVersionInfo.MD5}";
         Debug.Log($"[C->S] {url}");
@@ -198,6 +223,11 @@ public static class Version
 
         remoteManifest = await ResManifest.ParseResManifestAsync(dst);
         return true;
+    }
+
+    private static async Task DiffManifestAsync()
+    {
+        
     }
 
 
@@ -228,174 +258,5 @@ public static class Version
         }
         await File.WriteAllBytesAsync(dst, req.downloadHandler.data);
         return dst;
-    }
-}
-
-public struct VersionInfo
-{
-    public ushort ID;
-    public ushort Tag;
-    public string UpdateUrl1;
-    public string UpdateUrl2;
-    public string ClientUrl;
-    public ushort Exclude;
-    public string MD5;
-    public uint Time;
-
-    public ushort BaseID;
-    public uint NewTag;
-}
-
-public static class VersionFile
-{
-    public static VersionInfo ReadVersionFile(string filePath)
-    {
-        VersionInfo result = new VersionInfo();
-        using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read))
-        {
-            using BinaryReader reader = new BinaryReader(fs);
-            char chr1 = reader.ReadChar();
-            char chr2 = reader.ReadChar();
-            char chr3 = reader.ReadChar();
-            if (chr1 != 'V' || chr2 != 'H' || chr3 != 'F')
-            {
-                return result;
-            }
-            result.ID = ReadUShort(reader);
-            result.BaseID = ReadUShort(reader);
-            result.Time = ReadUInt(reader);
-            result.Tag = ReadUShort(reader);
-
-            for (ushort i = result.BaseID; i < result.ID; i++)
-            {
-                uint size = ReadUInt(reader);
-            }
-
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.UpdateUrl1 = ReadString(reader); }
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.UpdateUrl2 = ReadString(reader); }
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.ClientUrl = ReadString(reader); }
-
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.Exclude = ReadUShort(reader); }
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.MD5 = ReadString(reader); }
-            if (reader.BaseStream.Position < reader.BaseStream.Length) { result.NewTag = ReadUInt(reader); }
-        }
-        return result;
-    }
-
-#if UNITY_EDITOR
-    public static void WriteVersionFile(string filePath, VersionInfo versionInfo)
-    {
-        using (FileStream fs = new FileStream(filePath, FileMode.Create, FileAccess.Write))
-        {
-            using (BinaryWriter writer = new BinaryWriter(fs))
-            {
-                // 文件头
-                writer.Write('V');
-                writer.Write('H');
-                writer.Write('F');
-                // id
-                WriteUShort(writer, versionInfo.ID);
-                // baseid
-                WriteUShort(writer, versionInfo.BaseID);
-                // time
-                WriteUInt(writer, versionInfo.Time);
-                // tag
-                WriteUShort(writer, versionInfo.Tag);
-
-                for (ushort i = versionInfo.BaseID; i < versionInfo.ID; i++) { WriteUInt(writer, 0); }
-
-                WriteString(writer, versionInfo.UpdateUrl1);
-                WriteString(writer, versionInfo.UpdateUrl2);
-                WriteString(writer, versionInfo.ClientUrl);
-
-                // exclude
-                WriteUShort(writer, 0);
-                // md5
-                WriteString(writer, versionInfo.MD5);
-                // newtag
-                WriteUInt(writer, versionInfo.NewTag);
-            }
-        }
-    }
-#endif
-
-    #region util
-    private static ushort ReadUShort(BinaryReader reader)
-    {
-        ushort result = reader.ReadByte();
-        result = (ushort)(result << 8);
-        result += reader.ReadByte();
-
-        return result;
-    }
-
-    private static uint ReadUInt(BinaryReader reader)
-    {
-        uint result = reader.ReadByte();
-        result = (result << 24) + (uint)(reader.ReadByte() << 16);
-        result += (uint)(reader.ReadByte() << 8);
-        result += reader.ReadByte();
-
-        return result;
-    }
-
-    private static string ReadString(BinaryReader reader)
-    {
-        ushort len = ReadUShort(reader);
-        char[] chrs = reader.ReadChars(len);
-
-        return string.Concat<char>(chrs);
-    }
-
-    private static void WriteUShort(BinaryWriter writer, ushort value)
-    {
-        writer.Write((byte)(value >> 8));
-        writer.Write((byte)(value & 0xFF));
-    }
-
-    private static void WriteUInt(BinaryWriter writer, uint value)
-    {
-        writer.Write((byte)((value >> 24) & 0xFF));
-        writer.Write((byte)((value >> 16) & 0xFF));
-        writer.Write((byte)((value >> 8) & 0xFF));
-        writer.Write((byte)(value & 0xFF));
-    }
-
-    private static void WriteString(BinaryWriter writer, string value)
-    {
-        WriteUShort(writer, (ushort)value.Length);
-        writer.Write(value.ToCharArray());
-    }
-    #endregion
-}
-
-public struct ResUnit
-{
-    public string bundleName;
-    public string md5;
-    public string size;
-
-    public ResUnit(string bundleName, string md5, string size)
-    {
-        this.bundleName = bundleName;
-        this.md5 = md5;
-        this.size = size;
-    }
-}
-public static class ResManifest
-{
-    public static async Task<Dictionary<string, ResUnit>> ParseResManifestAsync(string filePath)
-    {
-        if (!System.IO.File.Exists(filePath)) return null;
-
-        Dictionary<string, ResUnit> dict = new Dictionary<string, ResUnit>(10240);
-        string[] lines = await System.IO.File.ReadAllLinesAsync(filePath);
-        for (int i = 0, iMax = lines.Length; i < iMax; i++)
-        {
-            string[] item = lines[i].Split(',');
-            string bundleName = item[0];
-            dict[bundleName] = new ResUnit(bundleName, item[1], item[2]);
-        }
-        return dict;
     }
 }
