@@ -92,19 +92,14 @@ public static class Version
     {
         Debug.Log("[update] 开始解析本地版本号");
         string dst = Path.Combine(Application.persistentDataPath, VERSIONFILENAME);
-        if (!File.Exists(dst)) 
-        { 
-            try
-            {
-                await CopyToPersistentAsync(VERSIONFILENAME); 
-            }
-            catch (IOException ex)
-            {
-                Debug.LogError($"[update] 复制版本文件失败: {ex.Message}");
-                return;
-            }
+        if(File.Exists(dst)) 
+        {
+            localVersionInfo = VersionFile.ReadVersionFile(dst);
+            return;
         }
 
+        // 不存在---从 StreamingAssets 复制到 PersistentDataPath
+        await CopyToPersistentAsync(VERSIONFILENAME);
         localVersionInfo = VersionFile.ReadVersionFile(dst);
     }
 
@@ -168,7 +163,7 @@ public static class Version
         Debug.Log($"[C->S] {url}");
         using var request = UnityWebRequest.Get(url);
         await request.SendWebRequest();
-        Debug.Log($"[S->C] {url}");
+        Debug.Log($"[S->C] {request.downloadHandler.text}");
         
         if (request.result != UnityWebRequest.Result.Success)
         {
@@ -181,6 +176,7 @@ public static class Version
         await File.WriteAllBytesAsync(dst, request.downloadHandler.data);
 
         remoteVersionInfo = VersionFile.ReadVersionFile(dst);
+        Debug.Log($"RemoteVersionFile: {remoteVersionInfo.ID}.{remoteVersionInfo.Tag}---{remoteVersionInfo.UpdateUrl1}---{remoteVersionInfo.MD5}");
         return true;
     }
 
@@ -227,36 +223,45 @@ public static class Version
 
     private static async Task DiffManifestAsync()
     {
-        
+        // http://devsvn.uuzuonline.net/M_00011_2026/releaseASClient/publish/dev/mobile/innerup/youzu/version/res
+        //versionAsset.json.3bf8be29a1b51d5e9148cebd68f8007a
     }
 
 
     /// <summary>
     /// 把文件从Streamming复制到Persistent
     /// </summary>
-    /// <param name="filePath"></param>
+    /// <param name="relativePath"></param>
     /// <param name="overwrite"></param>
     /// <returns></returns>
     /// <exception cref="IOException"></exception>
-    private static async Task<string> CopyToPersistentAsync(string filePath, bool overwrite = true)
+    private static async Task<string> CopyToPersistentAsync(string relativePath, bool overwrite = true)
     {
-        string src = Path.Combine(Application.streamingAssetsPath, filePath);
-        string dst = Path.Combine(Application.persistentDataPath, filePath);
+        string src = Path.Combine(Application.streamingAssetsPath, relativePath);
+        string dst = Path.Combine(Application.persistentDataPath, relativePath);
+        
         string dir = Path.GetDirectoryName(dst);
-        if (!Directory.Exists(dir) && !string.IsNullOrWhiteSpace(dir))
-            Directory.CreateDirectory(dir);
+        if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
 
-        if (!overwrite && File.Exists(dst))
-            return dst;
+        if (!overwrite && File.Exists(dst)) return dst;
 
+#if UNITY_EDITOR || UNITY_STANDALONE || UNITY_IOS
+        string srcFile = Path.Combine(Application.streamingAssetsPath, relativePath);
+        if (!File.Exists(srcFile))
+            throw new FileNotFoundException($"StreamingAssets file not found: {srcFile}", srcFile);
+
+        File.Copy(srcFile, dst, true);
+        return dst;
+#else // UNITY_ANDROID || UNITY_WEBGL
+        string srcUrl = Application.streamingAssetsPath + "/" + relativePath;
         using UnityWebRequest req = UnityWebRequest.Get(src);
         await req.SendWebRequest();
-
         if (req.result != UnityWebRequest.Result.Success)
         {
             throw new IOException($"Read StreamingAssets failed: {src}\n{req.error}");
         }
         await File.WriteAllBytesAsync(dst, req.downloadHandler.data);
         return dst;
+#endif
     }
 }
